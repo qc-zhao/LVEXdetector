@@ -1,7 +1,9 @@
 # LVEXdetector
 
 ## Detecting DNA methylation patterns suggestive of variable escape from X-chromosome inactivation
-<img alt="LVEXdetector_logo" src="https://github.com/user-attachments/assets/c2d0a063-db75-42bc-bf12-d2cc743df487" width="420" />
+<p align="center">
+  <img alt="LVEXdetector_logo" src="https://github.com/user-attachments/assets/c2d0a063-db75-42bc-bf12-d2cc743df487" width="420" />
+</p>
 
 
 
