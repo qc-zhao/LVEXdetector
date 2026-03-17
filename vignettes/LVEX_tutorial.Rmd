@@ -1,0 +1,506 @@
+---
+title: "LVEXdetector Tutorial: Fitting and Prediction for Bisulfite Counts and Illumina Beta Values"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+vignette: >
+  %\VignetteIndexEntry{LVEXdetector Tutorial: Fitting and Prediction for Bisulfite Counts and Illumina Beta Values}
+  %\VignetteEngine{knitr::rmarkdown}
+  \usepackage[utf8]{inputenc}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+# Overview
+
+`LVEXdetector` provides functions for fitting the LVE-X model to two common types of DNA methylation data:
+
+1. **Bisulfite sequencing count data**, using:
+   - `LVEX_fit_bisulfite_counts()`
+   - `LVEX_predict_bisulfite_counts()`
+
+2. **Illumina-array beta values**, using:
+   - `LVEX_fit_illumina_beta()`
+   - `LVEX_predict_illumina_beta()`
+
+In this tutorial, we illustrate both workflows using simulated data.
+
+```{r load-package}
+library(LVEXdetector)
+```
+
+# Part 1: Bisulfite sequencing counts
+
+## Simulate female and male count data
+
+In this example, female samples follow the LVE-X mixture structure, while male samples follow a simpler Binomial model driven by \eqn{\nu}.
+
+```{r simulate-bisulfite}
+set.seed(20250813)
+
+# ----------------------------------------------------------
+# Female simulation: Dirichlet-Multinomial style construction
+# ----------------------------------------------------------
+simulate_female_counts <- function(N = 100, phi = 50, depth_draw = 1000) {
+  z  <- rnorm(N)
+  w  <- rnorm(N)
+
+  nu <- plogis(1 + 0.5 * z)
+  pi <- plogis(-1 + 1 * w)
+
+  # LVE-X category probabilities
+  q2 <- nu * (1 - pi)
+  q1 <- nu * pi * (1 - nu) + (1 - nu) * (1 - pi)
+  q0 <- 1 - q1 - q2
+
+  # total read depth before down-sampling to 50 pseudo-trials
+  size <- rpois(N, depth_draw)
+
+  # Dirichlet-multinomial construction using Dirichlet + Multinomial
+  mu <- cbind(q0, q1, q2)
+  eps <- 1e-12
+  mu  <- pmax(mu, eps)
+  mu  <- mu / rowSums(mu)
+
+  alpha <- mu * phi
+
+  counts <- matrix(0L, nrow = N, ncol = 3)
+  colnames(counts) <- c("count0", "count1", "count2")
+
+  for (i in seq_len(N)) {
+    p_i <- as.numeric(extraDistr::rdirichlet(1, alpha[i, ]))
+    counts[i, ] <- as.vector(rmultinom(1, size = size[i], prob = p_i))
+  }
+
+  # total successes among 2*size latent positions
+  y_total <- counts[, 2] + 2L * counts[, 3]
+
+  # down-sample to 50 positions via hypergeometric sampling
+  M_total <- 2L * size
+  K_success <- y_total
+  n_draw <- 50L
+
+  y_obs <- mapply(function(K, M, n) {
+    rhyper(1, m = K, n = M - K, k = n)
+  }, K = K_success, M = M_total, n = n_draw)
+
+  list(
+    MC = as.integer(y_obs),
+    UC = as.integer(n_draw - y_obs),
+    z  = z,
+    w  = w
+  )
+}
+
+# ----------------------------------------------------------
+# Male simulation: Binomial
+# ----------------------------------------------------------
+simulate_male_counts <- function(N = 100, size = 50) {
+  z  <- rnorm(N)
+  w  <- rnorm(N)   # generated for dimensional consistency only
+  nu <- plogis(1 + 0.5 * z)
+
+  y <- rbinom(n = N, size = size, prob = nu)
+
+  list(
+    MC = as.integer(y),
+    UC = as.integer(size - y),
+    z  = z,
+    w  = w
+  )
+}
+```
+
+## Generate one example dataset and fit the model
+
+```{r fit-bisulfite-one}
+N_fem  <- 100
+N_male <- 100
+
+fem_dat  <- simulate_female_counts(N = N_fem, phi = 50)
+male_dat <- simulate_male_counts(N = N_male, size = 50)
+
+MC <- matrix(c(fem_dat$MC, male_dat$MC), ncol = 1)
+UC <- matrix(c(fem_dat$UC, male_dat$UC), ncol = 1)
+
+z <- data.frame(z1 = c(fem_dat$z, male_dat$z))
+w <- data.frame(w1 = c(fem_dat$w, male_dat$w))
+
+fem_idx <- c(rep(TRUE, N_fem), rep(FALSE, N_male))
+
+fit_counts <- LVEX_fit_bisulfite_counts(
+  i = 1,
+  MC = MC,
+  UC = UC,
+  z = z,
+  w = w,
+  fem_idx = fem_idx,
+  bootstrap_on_fail = TRUE,
+  bootstrap_B = 100,
+  bootstrap_seed = 1
+)
+
+fit_counts
+```
+
+## Inspect fitted quantities
+
+```{r inspect-bisulfite-fit}
+fit_counts$point_estimates
+fit_counts$standard_errors
+head(fit_counts$nu_hat)
+head(fit_counts$pi_hat)
+head(fit_counts$nu_ci)
+head(fit_counts$pi_ci)
+fit_counts$ci_method
+```
+
+## Predict on new covariate values
+
+```{r predict-bisulfite}
+new_z <- data.frame(z1 = c(1, 0))
+new_w <- data.frame(w1 = c(0, 1))
+
+pred_counts <- LVEX_predict_bisulfite_counts(
+  fit = fit_counts,
+  new_z = new_z,
+  new_w = new_w
+)
+
+pred_counts
+```
+
+## Small simulation study for bisulfite counts
+
+This chunk runs multiple simulated datasets and summarizes bias, coverage, average model-based standard errors, and empirical standard deviations.
+
+```{r sim-bisulfite, eval=FALSE}
+set.seed(20250813)
+
+D <- 200
+N_fem <- 100
+N_male <- 100
+phi_true <- 50
+
+theta_true <- c(
+  a0 = 1,
+  a1 = 0.5,
+  b0 = -1,
+  b1 = 1,
+  kappa = phi_true
+)
+
+param_names <- c("a0", "a1", "b0", "b1", "kappa")
+
+est_mat <- matrix(NA_real_, nrow = length(param_names), ncol = D)
+se_mat  <- matrix(NA_real_, nrow = length(param_names), ncol = D)
+
+rownames(est_mat) <- param_names
+rownames(se_mat)  <- param_names
+colnames(est_mat) <- paste0("sim", seq_len(D))
+colnames(se_mat)  <- paste0("sim", seq_len(D))
+
+fit_list_counts <- vector("list", D)
+
+for (i in seq_len(D)) {
+  fem_dat  <- simulate_female_counts(N = N_fem, phi = phi_true)
+  male_dat <- simulate_male_counts(N = N_male, size = 50)
+
+  MC_i <- matrix(c(fem_dat$MC, male_dat$MC), ncol = 1)
+  UC_i <- matrix(c(fem_dat$UC, male_dat$UC), ncol = 1)
+
+  z_i <- data.frame(z1 = c(fem_dat$z, male_dat$z))
+  w_i <- data.frame(w1 = c(fem_dat$w, male_dat$w))
+
+  fit_i <- LVEX_fit_bisulfite_counts(
+    i = 1,
+    MC = MC_i,
+    UC = UC_i,
+    z = z_i,
+    w = w_i,
+    fem_idx = c(rep(TRUE, N_fem), rep(FALSE, N_male)),
+    bootstrap_on_fail = TRUE,
+    bootstrap_B = 100,
+    bootstrap_seed = 1000 + i
+  )
+
+  fit_list_counts[[i]] <- fit_i
+
+  est_vec <- fit_i$point_estimates[c("a_Intercept", "a_z1", "b_Intercept", "b_w1", "kappa")]
+  names(est_vec) <- param_names
+  est_mat[, i] <- est_vec
+
+  if (!is.null(fit_i$standard_errors)) {
+    se_vec <- fit_i$standard_errors[c("a_Intercept", "a_z1", "b_Intercept", "b_w1", "kappa")]
+    names(se_vec) <- param_names
+    se_mat[, i] <- se_vec
+  }
+}
+
+# Bias
+bias_list <- list(
+  a0    = est_mat["a0", ]    - theta_true["a0"],
+  a1    = est_mat["a1", ]    - theta_true["a1"],
+  b0    = est_mat["b0", ]    - theta_true["b0"],
+  b1    = est_mat["b1", ]    - theta_true["b1"],
+  kappa = est_mat["kappa", ] - theta_true["kappa"]
+)
+
+boxplot(
+  bias_list,
+  las = 2,
+  main = "Bias of Parameter Estimates (Bisulfite counts)",
+  ylab = "Bias (Estimate - Truth)",
+  col = "lightblue"
+)
+abline(h = 0, col = "red", lty = 2)
+
+# Coverage
+coverage_counts <- sapply(param_names, function(p) {
+  est <- as.vector(est_mat[p, ])
+  se  <- as.vector(se_mat[p, ])
+
+  ok <- is.finite(est) & is.finite(se)
+  if (!any(ok)) return(NA_real_)
+
+  lower <- est[ok] - 1.96 * se[ok]
+  upper <- est[ok] + 1.96 * se[ok]
+
+  mean(theta_true[p] >= lower & theta_true[p] <= upper)
+})
+
+coverage_counts
+
+# Average model-based SE
+sapply(param_names, function(p) mean(se_mat[p, ], na.rm = TRUE))
+
+# Empirical SD
+sapply(param_names, function(p) sd(est_mat[p, ], na.rm = TRUE))
+```
+
+# Part 2: Illumina methylation beta values
+
+## Simulate female and male beta values
+
+Here, female samples follow a Beta model whose mean is determined by the LVE-X mixture mean, while male samples follow a Beta model with mean \eqn{\nu} only.
+
+```{r simulate-illumina}
+set.seed(20250813)
+
+# ----------------------------------------------------------
+# Female simulation: Beta with LVE-X mixture mean
+# ----------------------------------------------------------
+simulate_female_beta <- function(N = 100, phi = 10, eps = 1e-12) {
+  z  <- rnorm(N)
+  w  <- rnorm(N)
+
+  nu <- plogis(1 + 1 * z)
+  pi <- plogis(-1 + 0.5 * w)
+
+  q2 <- nu * (1 - pi)
+  q1 <- nu * pi * (1 - nu) + (1 - nu) * (1 - pi)
+  mu <- q2 + 0.5 * q1
+
+  mu <- pmin(pmax(mu, eps), 1 - eps)
+  y  <- rbeta(n = N, shape1 = mu * phi, shape2 = (1 - mu) * phi)
+
+  list(y = y, z = z, w = w)
+}
+
+# ----------------------------------------------------------
+# Male simulation: Beta with mean nu
+# ----------------------------------------------------------
+simulate_male_beta <- function(N = 100, phi = 10, eps = 1e-12) {
+  z  <- rnorm(N)
+  w  <- rnorm(N)
+
+  nu <- plogis(1 + 1 * z)
+  mu <- pmin(pmax(nu, eps), 1 - eps)
+
+  y <- rbeta(n = N, shape1 = mu * phi, shape2 = (1 - mu) * phi)
+
+  list(y = y, z = z, w = w)
+}
+```
+
+## Generate one example dataset and fit the model
+
+```{r fit-illumina-one}
+N_fem  <- 100
+N_male <- 100
+phi_beta <- 10
+
+fem_beta  <- simulate_female_beta(N = N_fem, phi = phi_beta)
+male_beta <- simulate_male_beta(N = N_male, phi = phi_beta)
+
+BetaMat <- matrix(c(fem_beta$y, male_beta$y), ncol = 1)
+
+z_beta <- data.frame(z1 = c(fem_beta$z, male_beta$z))
+w_beta <- data.frame(w1 = c(fem_beta$w, male_beta$w))
+
+fem_idx_beta <- c(rep(TRUE, N_fem), rep(FALSE, N_male))
+
+fit_beta <- LVEX_fit_illumina_beta(
+  i = 1,
+  BetaMat = BetaMat,
+  z = z_beta,
+  w = w_beta,
+  fem_idx = fem_idx_beta,
+  bootstrap_on_fail = TRUE,
+  bootstrap_B = 100,
+  bootstrap_seed = 1
+)
+
+fit_beta
+```
+
+## Inspect fitted quantities
+
+```{r inspect-illumina-fit}
+fit_beta$point_estimates
+fit_beta$standard_errors
+head(fit_beta$nu_hat)
+head(fit_beta$pi_hat)
+head(fit_beta$nu_ci)
+head(fit_beta$pi_ci)
+fit_beta$ci_method
+```
+
+## Predict on new covariate values
+
+```{r predict-illumina}
+new_z_beta <- data.frame(z1 = c(1, 0))
+new_w_beta <- data.frame(w1 = c(0, 1))
+
+pred_beta <- LVEX_predict_illumina_beta(
+  fit = fit_beta,
+  new_z = new_z_beta,
+  new_w = new_w_beta
+)
+
+pred_beta
+```
+
+## Small simulation study for Illumina beta values
+
+```{r sim-illumina, eval=FALSE}
+set.seed(20250813)
+
+D <- 200
+N_fem <- 100
+N_male <- 100
+phi_true_beta <- 10
+
+theta_true_beta <- c(
+  a0 = 1,
+  a1 = 1,
+  b0 = -1,
+  b1 = 0.5,
+  kappa = phi_true_beta
+)
+
+param_names <- c("a0", "a1", "b0", "b1", "kappa")
+
+est_mat_beta <- matrix(NA_real_, nrow = length(param_names), ncol = D)
+se_mat_beta  <- matrix(NA_real_, nrow = length(param_names), ncol = D)
+
+rownames(est_mat_beta) <- param_names
+rownames(se_mat_beta)  <- param_names
+colnames(est_mat_beta) <- paste0("sim", seq_len(D))
+colnames(se_mat_beta)  <- paste0("sim", seq_len(D))
+
+fit_list_beta <- vector("list", D)
+
+for (i in seq_len(D)) {
+  fem_i  <- simulate_female_beta(N = N_fem, phi = phi_true_beta)
+  male_i <- simulate_male_beta(N = N_male, phi = phi_true_beta)
+
+  y_i <- c(fem_i$y, male_i$y)
+  z_i <- c(fem_i$z, male_i$z)
+  w_i <- c(fem_i$w, male_i$w)
+
+  BetaMat_i <- matrix(y_i, ncol = 1)
+  z_i_df <- data.frame(z1 = z_i)
+  w_i_df <- data.frame(w1 = w_i)
+
+  fit_i <- LVEX_fit_illumina_beta(
+    i = 1,
+    BetaMat = BetaMat_i,
+    z = z_i_df,
+    w = w_i_df,
+    fem_idx = c(rep(TRUE, N_fem), rep(FALSE, N_male)),
+    bootstrap_on_fail = TRUE,
+    bootstrap_B = 100,
+    bootstrap_seed = 2000 + i
+  )
+
+  fit_list_beta[[i]] <- fit_i
+
+  est_vec <- fit_i$point_estimates[c("a_Intercept", "a_z1", "b_Intercept", "b_w1", "kappa")]
+  names(est_vec) <- param_names
+  est_mat_beta[, i] <- est_vec
+
+  if (!is.null(fit_i$standard_errors)) {
+    se_vec <- fit_i$standard_errors[c("a_Intercept", "a_z1", "b_Intercept", "b_w1", "kappa")]
+    names(se_vec) <- param_names
+    se_mat_beta[, i] <- se_vec
+  }
+}
+
+# Bias
+bias_list_beta <- list(
+  a0    = est_mat_beta["a0", ]    - theta_true_beta["a0"],
+  a1    = est_mat_beta["a1", ]    - theta_true_beta["a1"],
+  b0    = est_mat_beta["b0", ]    - theta_true_beta["b0"],
+  b1    = est_mat_beta["b1", ]    - theta_true_beta["b1"],
+  kappa = est_mat_beta["kappa", ] - theta_true_beta["kappa"]
+)
+
+boxplot(
+  bias_list_beta,
+  las = 2,
+  main = "Bias of Parameter Estimates (Illumina beta values)",
+  ylab = "Bias (Estimate - Truth)",
+  col = "lightblue"
+)
+abline(h = 0, col = "red", lty = 2)
+
+# Coverage
+coverage_beta <- sapply(param_names, function(p) {
+  est <- as.vector(est_mat_beta[p, ])
+  se  <- as.vector(se_mat_beta[p, ])
+
+  ok <- is.finite(est) & is.finite(se)
+  if (!any(ok)) return(NA_real_)
+
+  lower <- est[ok] - 1.96 * se[ok]
+  upper <- est[ok] + 1.96 * se[ok]
+
+  mean(theta_true_beta[p] >= lower & theta_true_beta[p] <= upper)
+})
+
+coverage_beta
+
+# Average model-based SE
+sapply(param_names, function(p) mean(se_mat_beta[p, ], na.rm = TRUE))
+
+# Empirical SD
+sapply(param_names, function(p) sd(est_mat_beta[p, ], na.rm = TRUE))
+```
+
+# Remarks
+
+This tutorial showed how to:
+
+- fit the LVE-X model to **bisulfite sequencing counts**,
+- generate predictions for new covariate settings,
+- fit the LVE-X model to **Illumina beta values**, and
+- run simple repeated-simulation summaries for both settings.
+
+In practice, you would replace the simulated inputs with your real methylation data matrices and sample-level covariates.
