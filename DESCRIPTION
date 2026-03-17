@@ -1,14 +1,17 @@
 Package: LVEXdetector
 Type: Package
-Title: LVE-X Model Fitting and Prediction for Bisulfite Sequencing Counts
+Title: LVE-X Model Fitting and Prediction for DNA Methylation Data
 Version: 0.0.0.9000
 Authors@R:
     person("Qicheng", "Zhao", email = "qicheng.zhao@mail.mcgill.ca", role = c("aut", "cre"))
-Description: Provides functions to fit and predict LVE-X models for bisulfite sequencing
-    methylation count data (methylated and unmethylated reads). The package supports
-    beta-binomial likelihood for female samples, binomial likelihood for male samples,
-    and offers delta-method or parametric bootstrap confidence intervals for nu (Xa) and
-    pi (Xi) under logit links.
+Description: Provides functions to fit and predict LVE-X models for DNA methylation
+    data from multiple platforms, including bisulfite sequencing methylation counts
+    (methylated and unmethylated reads) and Illumina-array methylation beta values.
+    The package supports beta-binomial likelihood for female bisulfite sequencing
+    samples, binomial likelihood for male bisulfite sequencing samples, and Beta-model
+    likelihoods for Illumina beta values under a sex-aware LVE-X framework. It offers
+    delta-method or parametric bootstrap confidence intervals for nu (Xa) and pi (Xi)
+    under logit links.
 License: MIT + file LICENSE
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
