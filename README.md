@@ -22,3 +22,14 @@ devtools::install_github("qc-zhao/LVEXdetector")
 
 # load the package
 library(LVEXdetector)
+```
+
+## Tutorial
+
+A tutorial illustrating the main functions of **LVEXdetector** is available [here](https://qc-zhao.github.io/LVEXdetector/LVEX_tutorial.html).
+
+The source `.Rmd` file for the tutorial is also available in the `vignettes/` folder of this repository for download, inspection, and modification.
+
+## Contact
+
+Questions, comments, and suggestions are very welcome. Please feel free to contact the author if you have any questions about the package, its implementation, or potential applications.
